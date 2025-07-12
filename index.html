@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Emotion & Speech Log</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- face-api.js for emotion detection -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        /* Custom font and base styling */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Style for the video element to show a mirrored view */
+        #video {
+            transform: scaleX(-1);
+            -webkit-transform: scaleX(-1);
+        }
+        /* Custom scrollbar for the log */
+        #logContainer::-webkit-scrollbar {
+            width: 8px;
+        }
+        #logContainer::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        #logContainer::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        #logContainer::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-100 text-gray-800 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 md:p-8">
+        <h1 class="text-2xl md:text-3xl font-bold text-center text-gray-900 mb-4">AI Emotion & Speech Log</h1>
+        <p class="text-center text-gray-600 mb-6">Start the session to analyze your speech and facial expressions in real-time.</p>
+
+        <!-- Main container for video and log -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            <!-- Video and Controls -->
+            <div class="flex flex-col items-center">
+                <div class="relative w-full max-w-md rounded-lg overflow-hidden shadow-md bg-gray-900 aspect-video">
+                    <video id="video" width="100%" height="100%" autoplay muted playsinline></video>
+                    <div id="loadingMessage" class="absolute inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center text-white p-4">
+                        <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p id="loadingText" class="text-lg font-medium">Loading AI Models...</p>
+                        <p class="text-sm text-gray-300 mt-1">Please wait, this may take a moment.</p>
+                    </div>
+                </div>
+                <button id="startStopBtn" class="mt-6 w-full max-w-md bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed">
+                    Start Session
+                </button>
+            </div>
+
+            <!-- Log Display -->
+            <div class="flex flex-col">
+                <h2 class="text-xl font-bold mb-3 text-center lg:text-left">Analysis Log</h2>
+                <div id="logContainer" class="bg-gray-50 border border-gray-200 rounded-lg p-4 h-64 lg:h-full overflow-y-auto">
+                    <p class="text-gray-500 italic">Your session log will appear here...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Element Selection ---
+        const video = document.getElementById('video');
+        const startStopBtn = document.getElementById('startStopBtn');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const loadingText = document.getElementById('loadingText');
+        const logContainer = document.getElementById('logContainer');
+
+        // --- State Variables ---
+        let stream;
+        let isSessionActive = false;
+        let emotionInterval;
+        let currentEmotion = 'neutral';
+        
+        // --- Speech Recognition Setup ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+        } else {
+            console.error("Speech Recognition not supported in this browser.");
+            startStopBtn.disabled = true;
+            startStopBtn.textContent = "Browser Not Supported";
+        }
+
+
+        // --- AI Model Loading ---
+        // This function loads all the necessary models from face-api.js
+        async function loadModels() {
+            const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+            try {
+                await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+                await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+                await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+                await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+                console.log("AI Models loaded successfully");
+                loadingText.textContent = 'Ready to Start!';
+                startStopBtn.disabled = false;
+            } catch (error) {
+                console.error("Failed to load AI models:", error);
+                loadingText.textContent = 'Error Loading Models';
+                alert("Could not load the AI models. Please refresh the page to try again.");
+            }
+        }
+
+        // --- Camera Setup ---
+        async function startVideo() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                video.srcObject = stream;
+                video.addEventListener('loadedmetadata', () => {
+                    loadingMessage.style.display = 'none'; // Hide loading message once video plays
+                });
+            } catch (err) {
+                console.error("Error accessing webcam:", err);
+                alert("Could not access the webcam. Please ensure you have given permission and are not using it in another application.");
+                loadingText.textContent = 'Webcam Access Denied';
+            }
+        }
+
+        // --- Emotion Detection ---
+        function startEmotionDetection() {
+            emotionInterval = setInterval(async () => {
+                if (!isSessionActive) return;
+                
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceExpressions();
+                
+                if (detections.length > 0) {
+                    // Find the dominant emotion
+                    const expressions = detections[0].expressions;
+                    const dominantEmotion = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
+                    currentEmotion = dominantEmotion;
+                } else {
+                    currentEmotion = '...'; // No face detected
+                }
+            }, 700); // Run detection every 700ms
+        }
+
+        // --- Speech Recognition Handlers ---
+        recognition.onstart = () => {
+            console.log("Speech recognition started.");
+        };
+
+        recognition.onend = () => {
+            console.log("Speech recognition ended.");
+            // Restart recognition if the session is still supposed to be active
+            if (isSessionActive) {
+                recognition.start();
+            }
+        };
+        
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            
+            if (finalTranscript) {
+                logResult(finalTranscript, currentEmotion);
+            }
+        };
+
+        // --- Logging Function ---
+        function logResult(text, emotion) {
+            // If this is the first log, clear the placeholder text
+            if (logContainer.querySelector('p.italic')) {
+                logContainer.innerHTML = '';
+            }
+
+            const emotionEmojiMap = {
+                neutral: '😐',
+                happy: '😊',
+                sad: '😢',
+                angry: '😠',
+                fearful: '😨',
+                disgusted: '🤢',
+                surprised: '😮',
+                '...': '👤' // For when no face is detected
+            };
+
+            const logEntry = document.createElement('div');
+            logEntry.className = 'mb-3 p-3 bg-white rounded-lg shadow-sm flex items-start';
+            
+            logEntry.innerHTML = `
+                <span class="text-2xl mr-3">${emotionEmojiMap[emotion] || '😐'}</span>
+                <div>
+                    <p class="font-semibold capitalize text-blue-600">${emotion}</p>
+                    <p class="text-gray-700">${text.trim()}</p>
+                </div>
+            `;
+            
+            logContainer.appendChild(logEntry);
+            // Auto-scroll to the bottom
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // --- Main Control Logic ---
+        startStopBtn.addEventListener('click', () => {
+            if (!isSessionActive) {
+                // Start the session
+                isSessionActive = true;
+                startStopBtn.textContent = 'Stop Session';
+                startStopBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                startStopBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                
+                logContainer.innerHTML = '<p class="text-gray-500 italic">Session started. Begin speaking...</p>';
+
+                if (recognition) {
+                    recognition.start();
+                }
+                startEmotionDetection();
+
+            } else {
+                // Stop the session
+                isSessionActive = false;
+                startStopBtn.textContent = 'Start Session';
+                startStopBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+                startStopBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                
+                if (recognition) {
+                    recognition.stop();
+                }
+                clearInterval(emotionInterval);
+                logResult("Session ended.", "neutral");
+            }
+        });
+
+        // --- Initialization ---
+        window.onload = async () => {
+            startStopBtn.disabled = true;
+            await startVideo();
+            await loadModels();
+        };
+
+    </script>
+</body>
+</html>
